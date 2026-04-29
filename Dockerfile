@@ -1,6 +1,6 @@
 FROM python:3.10-slim
 WORKDIR /app
-# Устанавливаем библиотеки прямо при сборке
-RUN pip install --no-cache-dir aiogram==3.10.0 openai
+# Эта строчка установит всё необходимое
+RUN pip install --no-cache-dir aiogram openai
 COPY . .
 CMD ["python", "main.py"]
