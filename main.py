@@ -77,6 +77,3 @@ def clean_html(text):
     text = html.escape(text)
     text = text.replace('**', '<b>').replace('**', '</b>')
     text = re.sub(r'
-http://googleusercontent.com/immersive_entry_chip/0
-
-Очисти `main.py` полностью перед вставкой. Нажми **Commit changes** и сделай **Manual Deploy** в Render. Теперь в коде не будет посторонних символов.
