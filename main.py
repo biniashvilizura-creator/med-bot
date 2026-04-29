@@ -2,6 +2,7 @@ import os
 import logging
 import asyncio
 import psycopg2
+import re
 from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
@@ -9,28 +10,25 @@ from openai import OpenAI
 from tavily import TavilyClient
 from aiohttp import web
 
-# Логирование
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# --- CONFIGURATION ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("MythosEngine")
 
-# Конфигурация из Environment Variables
 TOKEN = os.getenv("TG_BOT_TOKEN")
 SAMBA_KEY = os.getenv("SAMBANOVA_API_KEY")
 TAVILY_KEY = os.getenv("TAVILY_API_KEY")
 DB_URL = os.getenv("DATABASE_URL")
-ADMIN_IDS = [int(id) for id in os.getenv("ADMIN_IDS", "7007517591,6862724693").split(",")]
 PORT = int(os.getenv("PORT", 10000))
+ADMIN_IDS = [int(i.strip()) for i in os.getenv("ADMIN_IDS", "7007517591,6862724693").split(",")]
 
-# Инициализация клиентов
+# Clients
 client = OpenAI(api_key=SAMBA_KEY, base_url="https://api.sambanova.ai/v1")
 tavily = TavilyClient(api_key=TAVILY_KEY)
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
-# --- БЛОК РАБОТЫ С ПАМЯТЬЮ (PostgreSQL) ---
-
+# --- DATABASE ENGINE ---
 def init_db():
-    """Инициализация таблицы памяти"""
     try:
         with psycopg2.connect(DB_URL) as conn:
             with conn.cursor() as cur:
@@ -44,104 +42,117 @@ def init_db():
                     )
                 """)
             conn.commit()
-        logger.info("Database initialized.")
+        logger.info("DATABASE: Operational")
     except Exception as e:
-        logger.error(f"DB Init Error: {e}")
+        logger.error(f"DATABASE: Critical Failure - {e}")
 
-def get_mem(user_id, limit=3):
-    """Извлечение последних диалогов"""
+def get_context(user_id):
     try:
         with psycopg2.connect(DB_URL) as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT query, response FROM memory WHERE user_id = %s ORDER BY id DESC LIMIT %s", (user_id, limit))
-                res = cur.fetchall()
-                return "\n".join([f"Q: {m[0]} | A: {m[1][:200]}..." for m in res])
-    except: return "No past memory found."
+                cur.execute("SELECT query, response FROM memory WHERE user_id = %s ORDER BY id DESC LIMIT 3", (user_id,))
+                rows = cur.fetchall()
+                return "\n".join([f"User: {r[0]}\nMythos: {r[1][:300]}..." for r in reversed(rows)])
+    except: return ""
 
-def save_mem(user_id, query, response):
-    """Сохранение нового опыта"""
+def save_context(user_id, q, a):
     try:
         with psycopg2.connect(DB_URL) as conn:
             with conn.cursor() as cur:
-                cur.execute("INSERT INTO memory (user_id, query, response) VALUES (%s, %s, %s)", 
-                           (user_id, query, response[:1000]))
+                cur.execute("INSERT INTO memory (user_id, query, response) VALUES (%s, %s, %s)", (user_id, q, a))
             conn.commit()
-    except Exception as e:
-        logger.error(f"Save Memory Error: {e}")
+    except Exception as e: logger.error(f"DB_SAVE_ERROR: {e}")
 
-# --- БЛОК ПОИСКА (Tavily) ---
-
-async def search_live(query):
-    """Поиск данных в реальном времени (2026)"""
+# --- TOOLS: SEARCH ---
+async def fetch_web_data(query):
     try:
+        # Авто-уточнение запроса для Тбилиси и 2026 года
+        enhanced_query = f"{query} current information 2026 Tbilisi Georgia"
         loop = asyncio.get_event_loop()
-        res = await loop.run_in_executor(None, lambda: tavily.search(query=query, search_depth="advanced"))
-        return "\n".join([f"- {r['content'][:300]} [Source: {r['url']}]" for r in res['results'][:3]])
+        search = await loop.run_in_executor(None, lambda: tavily.search(query=enhanced_query, search_depth="advanced", max_results=4))
+        
+        results = []
+        for r in search['results']:
+            content = r['content'][:400].replace('<', '&lt;').replace('>', '&gt;')
+            results.append(f"• <b>{r['title']}</b>\n{content}\n<a href='{r['url']}'>Читать источник</a>")
+        return "\n\n".join(results) if results else "Данные в сети не обнаружены."
     except Exception as e:
-        logger.error(f"Search Error: {e}")
-        return "Live search unavailable."
+        logger.error(f"SEARCH_ERROR: {e}")
+        return "Глобальный поиск временно недоступен."
 
-# --- ОБРАБОТКА СООБЩЕНИЙ ---
+# --- UTILS: FORMATTING ---
+def clean_html(text):
+    """Преобразует стандартный Markdown ИИ в безопасный HTML для Telegram"""
+    text = text.replace('**', '<b>').replace('**', '</b>') # Bold
+    text = re.sub(r'### (.*)', r'<b><u>\1</u></b>', text) # Headers
+    text = re.sub(r'```python(.*?)```', r'<pre><code class="language-python">\1</code></pre>', text, flags=re.DOTALL)
+    text = re.sub(r'```(.*?)```', r'<pre><code>\1</code></pre>', text, flags=re.DOTALL)
+    text = text.replace('`', '<code>').replace('`', '</code>')
+    return text
 
+# --- CORE HANDLER ---
 @dp.message()
-async def mythos_core(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS or not message.text:
-        return
+async def mythos_engine(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS or not message.text: return
+
+    # 1. Инициализация поиска
+    status = await message.answer("<code>[MYTHOS: SCANNING_ENVIRONMENT...]</code>")
     
-    status = await message.answer("<code>[MYTHOS: ANALYZING_SYSTEM...]</code>")
-    
-    # Сбор контекста
-    mem_context = get_mem(message.from_user.id)
-    live_context = await search_live(message.text)
-    
-    sys_prompt = (
-        f"Ты — Mythos, автономный инженерный разум. Специализация: Архитектура, Чистый код, OSINT, ИБ, Тренды 2026.\n"
-        f"ПАМЯТЬ_ПРОШЛОГО: {mem_context}\n"
-        f"АКТУАЛЬНЫЕ_ДАННЫЕ: {live_context}\n"
-        f"ПРАВИЛА: Ответ только технический. Без приветствий и вежливости. Используй Markdown для кода."
+    web_context = await fetch_web_data(message.text)
+    user_memory = get_context(message.from_user.id)
+
+    # 2. Формирование промпта
+    system_prompt = (
+        "Ты — Mythos. Автономный инженерный разум v4.0. Тбилиси, 2026.\n"
+        f"ПАМЯТЬ_ДИАЛОГА:\n{user_memory}\n\n"
+        f"ДАННЫЕ_СЕТИ_2026:\n{web_context}\n\n"
+        "ЗАДАЧА: Отвечай максимально технично, глубоко и лаконично. "
+        "Используй HTML: <b>, <i>, <code>, <pre>. "
+        "Если данные из сети противоречат твоим знаниям 2024 года — приоритет данным СЕТИ 2026 года."
     )
 
     try:
+        # 3. Запрос к SambaNova
         response = client.chat.completions.create(
             model='Meta-Llama-3.3-70B-Instruct',
-            messages=[{"role": "system", "content": sys_prompt}, {"role": "user", "content": message.text}],
-            temperature=0.3,
-            max_tokens=3000
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": message.text}],
+            temperature=0.2,
+            max_tokens=3500
         )
-        ans = response.choices[0].message.content
         
-        # Сохранение в БД
-        save_mem(message.from_user.id, message.text, ans)
+        raw_answer = response.choices[0].message.content
+        formatted_answer = clean_html(raw_answer)
         
-        # Логика отправки с защитой от ошибок парсинга
-        if len(ans) > 4000:
-            for i in range(0, len(ans), 4000):
-                await message.answer(ans[i:i+4000], parse_mode=None)
+        save_context(message.from_user.id, message.text, raw_answer)
+
+        # 4. Вывод данных
+        if len(formatted_answer) > 4000:
+            chunks = [formatted_answer[i:i+4000] for i in range(0, len(formatted_answer), 4000)]
+            for chunk in chunks:
+                await message.answer(chunk, parse_mode=ParseMode.HTML)
             await status.delete()
         else:
             try:
-                await status.edit_text(ans, parse_mode=ParseMode.MARKDOWN)
-            except:
-                await status.edit_text(ans, parse_mode=None) # Резервный сброс без форматирования
-                
+                await status.edit_text(formatted_answer, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+            except Exception as e:
+                logger.warning(f"HTML_RECOVERY: {e}")
+                await status.edit_text(raw_answer, parse_mode=None)
+
     except Exception as e:
-        logger.error(f"Core Error: {e}")
-        await status.edit_text(f"<code>[CRITICAL_FAILURE]: {e}</code>")
+        logger.error(f"CRITICAL_ERROR: {e}")
+        await status.edit_text(f"<code>[SYSTEM_FAILURE]: {e}</code>")
 
-# --- ЗАПУСК СЕРВИСА ---
-
-async def handle_health(request):
-    return web.Response(text="MYTHOS_ONLINE")
+# --- LIFECYCLE ---
+async def health(request): return web.Response(text="MYTHOS_CORE_ACTIVE")
 
 async def main():
     init_db()
     app = web.Application()
-    app.router.add_get("/", handle_health)
+    app.router.add_get("/", health)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
-    asyncio.create_task(site.start())
-
+    asyncio.create_task(web.TCPSite(runner, "0.0.0.0", PORT).start())
+    
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
