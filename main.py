@@ -8,7 +8,7 @@ from openai import OpenAI
 logging.basicConfig(level=logging.INFO)
 TOKEN = os.getenv("TG_BOT_TOKEN")
 SAMBA_KEY = os.getenv("SAMBANOVA_API_KEY")
-ADMIN_IDS = [7007517591, 6862724693]
+ADMIN_IDS = [7007517591, 6862724693] # Твой и жены
 
 client = OpenAI(api_key=SAMBA_KEY, base_url="https://api.sambanova.ai/v1")
 bot = Bot(token=TOKEN)
@@ -17,28 +17,25 @@ dp = Dispatcher()
 @dp.message(Command("start"))
 async def start(message: types.Message):
     if message.from_user.id in ADMIN_IDS:
-        await message.answer("✅ Бот активен! Теперь я отвечаю только вам.")
+        await message.answer("✅ Бот запущен! Теперь я работаю только на Render.")
 
 @dp.message()
 async def handle(message: types.Message):
     if message.from_user.id not in ADMIN_IDS or not message.text:
         return
-    msg = await message.answer("⏳ Минутку, советуюсь с ИИ...")
+    msg = await message.answer("⏳ Анализирую...")
     try:
         res = client.chat.completions.create(
             model='Llama-3.1-Tulu-3-405B',
-            messages=[
-                {"role": "system", "content": "Ты профессиональный дерматолог. Отвечай кратко и на русском языке."},
-                {"role": "user", "content": message.text}
-            ],
+            messages=[{"role": "system", "content": "Ты врач-дерматолог. Отвечай кратко."},
+                     {"role": "user", "content": message.text}],
             temperature=0.1
         )
         await msg.edit_text(res.choices[0].message.content)
     except Exception as e:
-        await msg.edit_text(f"❌ Ошибка: {e}")
+        await msg.edit_text(f"❌ Ошибка ИИ: Проверьте SAMBANOVA_API_KEY")
 
 async def main():
-    # Эта строчка магически лечит ошибку 409
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
