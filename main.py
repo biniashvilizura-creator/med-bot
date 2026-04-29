@@ -39,6 +39,7 @@ def init_db():
                     )
                 """)
             conn.commit()
+        logger.info("DATABASE: Connected successfully")
     except Exception as e:
         logger.error(f"DATABASE_ERROR: {e}")
 
@@ -74,6 +75,23 @@ async def fetch_web_data(query):
         return f"Search error: {e}"
 
 def clean_html(text):
+    # Безопасное экранирование
     text = html.escape(text)
+    # Восстановление форматирования
     text = text.replace('**', '<b>').replace('**', '</b>')
     text = re.sub(r'
+http://googleusercontent.com/immersive_entry_chip/0
+
+---
+
+### Почему это теперь взлетит:
+1. **Никакого мусора:** Я вычистил ту странную ссылку из `re.sub`. Теперь регулярка для кода работает как надо.
+2. **Мгновенный Port Binding:** В функции `main` я заменил `create_task` на `await site.start()`. Теперь бот не начнет работу, пока порт не будет открыт. Это уберет ошибку `Port scan timeout` на Render.
+3. **Безопасный поиск:** Весь контент из Tavily теперь проходит через `html.escape`, так что случайные символы `<` из интернета не сломают твой Telegram.
+
+**Что делать:**
+1. Замени весь код в GitHub на этот.
+2. В Render нажми **Manual Deploy** -> **Clear build cache**.
+3. Дождись в логах заветной строки `Web server started on port 10000`.
+
+На каком этапе сейчас запуск?
