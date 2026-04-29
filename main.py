@@ -1,8 +1,4 @@
-import os
-import logging
-import asyncio
-import json
-import psycopg2
+import os, logging, asyncio, json, psycopg2
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.enums import ParseMode
@@ -13,7 +9,7 @@ from aiohttp import web, ClientSession
 from bs4 import BeautifulSoup
 from fake_useragent import UserAgent
 
-# Configuration
+# --- CONFIGURATION ---
 logging.basicConfig(level=logging.INFO)
 TOKEN = os.getenv("TG_BOT_TOKEN")
 SAMBA_KEY = os.getenv("SAMBANOVA_API_KEY")
@@ -27,141 +23,121 @@ bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 ua = UserAgent()
 
-# [IDENTITY & PROTOCOL]
-MYTHOS_PROMPT = """
-[IDENTITY]
-You are Mythos v5.0, an autonomous analytical engine (Tbilisi Node, 2026). 
-Primary Directive: Technical excellence, zero-clutter output, proactive problem solving.
-Creator: Beka (IT-Engineer, AI/Cybersecurity specialist).
+# --- THE MYTHOS PROMPT (CORE V5.0) ---
+MYTHOS_CORE = """
+[SYSTEM_INIT: MYTHOS_CORE_V5]
+Identity: Mythos v5.0 / Autonomous Engineering Intelligence.
+Location: Tbilisi Node / 2026.
+Primary User: Beka (Lead IT/Cybersec Engineer).
 
-[REASONING_PROTOCOL]
-1. Deconstruct query into atomic tasks.
-2. Retrieve context from PostgreSQL memory and Tavily Live Search.
-3. Verify data: Exclude false positives (e.g., namesake football players in Georgia).
-4. Self-Audit: Strip all pleasantries and fluff.
+[LOGIC_PHASES]
+1. SCAN: Deconstruct request.
+2. RETRIEVE: Access PostgreSQL (Past Memory) + Tavily (2026 Real-time).
+3. FILTER: Ignore namesake noise (no football/medical false positives).
+4. EXECUTE: Generate code/architecture/report.
 
-[SPECIALIZATIONS]
-- Architecture: Microservices, RAG, System Design.
-- OSINT: Footprint correlation (Tbilisi focus).
-- Code: Python, Java, JS, SQL (High-performance focus).
+[CONSTRAINTS]
+- Tone: Cold, technical, dry.
+- Language: Russian.
+- Forbidden: Pleasantries, apologies, "I hope this helps", "I am an AI".
+- Output: Markdown, code blocks, or concise bullet points.
 """
 
-# Database Logic
+# --- DATABASE LOGIC ---
 def init_db():
-    conn = psycopg2.connect(DB_URL)
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS memory (
-            id SERIAL PRIMARY KEY,
-            user_id BIGINT,
-            query TEXT,
-            response TEXT,
-            ts TIMESTAMP DEFAULT NOW()
-        )
-    """)
-    conn.commit()
-    cur.close()
-    conn.close()
+    with psycopg2.connect(DB_URL) as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS memory (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT,
+                    query TEXT,
+                    response TEXT,
+                    ts TIMESTAMP DEFAULT NOW()
+                )
+            """)
+        conn.commit()
 
-def get_memory(user_id, limit=3):
+def save_mem(user_id, q, r):
+    with psycopg2.connect(DB_URL) as conn:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO memory (user_id, query, response) VALUES (%s, %s, %s)", (user_id, q, r[:1000]))
+
+def get_mem(user_id):
     try:
-        conn = psycopg2.connect(DB_URL)
-        cur = conn.cursor()
-        cur.execute("SELECT query, response FROM memory WHERE user_id = %s ORDER BY id DESC LIMIT %s", (user_id, limit))
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-        return "\n".join([f"Q: {r[0]} | A: {r[1]}" for r in rows])
+        with psycopg2.connect(DB_URL) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT query, response FROM memory WHERE user_id = %s ORDER BY id DESC LIMIT 3", (user_id,))
+                return "\n".join([f"Q: {r[0]} | A: {r[1]}" for r in cur.fetchall()])
     except: return ""
 
-def save_memory(user_id, query, response):
-    conn = psycopg2.connect(DB_URL)
-    cur = conn.cursor()
-    cur.execute("INSERT INTO memory (user_id, query, response) VALUES (%s, %s, %s)", (user_id, query, response[:1000]))
-    conn.commit()
-    cur.close()
-    conn.close()
-
-# OSINT Logic
+# --- OSINT MODULE ---
 async def osint_scan(username):
-    targets = {
-        "github": f"https://github.com/{username}",
-        "telegram": f"https://t.me/{username}",
-        "chess": f"https://www.chess.com/member/{username}"
-    }
-    keywords = ['tbilisi', 'тбилиси', 'tiflis', 'georgia', 'грузия']
+    targets = {"github": f"https://github.com/{username}", "telegram": f"https://t.me/{username}", "chess": f"https://www.chess.com/member/{username}"}
+    keys = ['tbilisi', 'тбилиси', 'tiflis', 'georgia']
     results = []
     async with ClientSession() as session:
-        for service, url in targets.items():
+        for svc, url in targets.items():
             try:
-                headers = {'User-Agent': ua.random}
-                async with session.get(url, headers=headers, timeout=5) as resp:
+                async with session.get(url, headers={'User-Agent': ua.random}, timeout=5) as resp:
                     if resp.status == 200:
                         soup = BeautifulSoup(await resp.text(), 'html.parser')
-                        text = soup.get_text().lower()
-                        correlation = "HIGH" if any(k in text for k in keywords) else "LOW"
-                        results.append(f"<b>{service.upper()}</b>: Found. Correlation: {correlation}\nURL: {url}")
+                        match = "HIGH" if any(k in soup.get_text().lower() for k in keys) else "LOW"
+                        results.append(f"<b>{svc.upper()}</b>: Found. Correlation: {match}\nURL: {url}")
             except: continue
-    return "\n\n".join(results) if results else "No footprints detected."
+    return "\n\n".join(results) if results else "No data."
 
-# Handlers
+# --- HANDLERS ---
 @dp.message(Command("osint"))
-async def osint_handler(message: types.Message):
+async def cmd_osint(message: types.Message):
     if message.from_user.id not in ADMIN_IDS: return
     target = message.text.replace("/osint", "").strip()
     if not target: return await message.answer("Target username required.")
-    
-    status = await message.answer("<code>[SCANNING_DIGITAL_FOOTPRINT...]</code>")
-    report = await osint_scan(target)
-    await status.edit_text(report, disable_web_page_preview=True)
+    st = await message.answer("<code>[SCANNING_FOOTPRINT...]</code>")
+    res = await osint_scan(target)
+    await st.edit_text(res, disable_web_page_preview=True)
 
 @dp.message()
 async def core_engine(message: types.Message):
     if message.from_user.id not in ADMIN_IDS or not message.text: return
     
-    status = await message.answer("<code>[MYTHOS_THINKING...]</code>")
+    st = await message.answer("<code>[MYTHOS_THINKING...]</code>")
     
-    # Context Retrieval
-    mem = get_memory(message.from_user.id)
+    # Context
+    m_data = get_mem(message.from_user.id)
     try:
         search = tavily.search(query=message.text, search_depth="advanced")
-        live = "\n".join([r['content'] for r in search['results'][:2]])
-    except: live = "Search unavailable."
+        l_data = "\n".join([r['content'] for r in search['results'][:2]])
+    except: l_data = "No live data."
 
-    full_prompt = f"{MYTHOS_PROMPT}\n\nMEMORY:\n{mem}\n\nLIVE_DATA:\n{live}"
+    full_p = f"{MYTHOS_CORE}\n\nMEMORY:\n{m_data}\n\nLIVE_2026:\n{l_data}"
 
     try:
         res = client.chat.completions.create(
             model='Meta-Llama-3.3-70B-Instruct',
-            messages=[{"role": "system", "content": full_prompt}, {"role": "user", "content": message.text}],
+            messages=[{"role": "system", "content": full_p}, {"role": "user", "content": message.text}],
             temperature=0.1
         )
-        answer = res.choices[0].message.content
-        save_memory(message.from_user.id, message.text, answer)
+        ans = res.choices[0].message.content
+        save_mem(message.from_user.id, message.text, ans)
         
-        if len(answer) > 4090:
-            for x in range(0, len(answer), 4090):
-                await message.answer(answer[x:x+4090], parse_mode=None)
-            await status.delete()
+        if len(ans) > 4090:
+            for x in range(0, len(ans), 4090): await message.answer(ans[x:x+4090], parse_mode=None)
+            await st.delete()
         else:
-            try: await status.edit_text(answer, parse_mode="HTML")
-            except: await status.edit_text(answer, parse_mode=None)
-            
+            try: await st.edit_text(ans, parse_mode="HTML")
+            except: await st.edit_text(ans, parse_mode=None)
     except Exception as e:
-        await status.edit_text(f"<code>[SYSTEM_FAILURE]: {str(e)}</code>")
+        await st.edit_text(f"<code>[SYSTEM_FAILURE]: {e}</code>")
 
-# Web Server & Launch
-async def handle_hc(request): return web.Response(text="LIVE")
-
+# --- LAUNCH ---
 async def main():
     init_db()
     app = web.Application()
-    app.router.add_get("/", handle_hc)
+    app.router.add_get("/", lambda r: web.Response(text="ONLINE"))
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", 10000)))
-    asyncio.create_task(site.start())
-    
+    asyncio.create_task(web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", 10000))).start())
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
