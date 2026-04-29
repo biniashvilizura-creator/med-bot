@@ -17,19 +17,18 @@ dp = Dispatcher()
 @dp.message(Command("start"))
 async def start(message: types.Message):
     if message.from_user.id in ADMIN_IDS:
-        await message.answer("✅ Бот запущен! Жду ваш медицинский вопрос.")
+        await message.answer("✅ Бот активен! Теперь я отвечаю только вам.")
 
 @dp.message()
 async def handle(message: types.Message):
     if message.from_user.id not in ADMIN_IDS or not message.text:
         return
-    
-    msg = await message.answer("⏳ Анализирую вопрос...")
+    msg = await message.answer("⏳ Минутку, советуюсь с ИИ...")
     try:
         res = client.chat.completions.create(
             model='Llama-3.1-Tulu-3-405B',
             messages=[
-                {"role": "system", "content": "Ты врач-дерматолог и трихолог. Отвечай кратко и профессионально на русском языке."},
+                {"role": "system", "content": "Ты профессиональный дерматолог. Отвечай кратко и на русском языке."},
                 {"role": "user", "content": message.text}
             ],
             temperature=0.1
@@ -39,6 +38,7 @@ async def handle(message: types.Message):
         await msg.edit_text(f"❌ Ошибка: {e}")
 
 async def main():
+    # Эта строчка магически лечит ошибку 409
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
