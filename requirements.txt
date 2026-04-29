@@ -3,3 +3,5 @@ openai
 aiohttp
 tavily-python
 psycopg2-binary
+beautifulsoup4
+fake-useragent
