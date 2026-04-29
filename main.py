@@ -1,45 +1,72 @@
-import os, telebot, threading, time, requests
+import os
+import logging
+import asyncio
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
 from openai import OpenAI
-from fastapi import FastAPI
-import uvicorn
 
-app = FastAPI()
+# 1. ЛОГИРОВАНИЕ
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-@app.get("/")
-def health():
-    return {"status": "Online"}
+# 2. ПЕРЕМЕННЫЕ (Берутся из настроек Render)
+TOKEN = os.getenv("TG_BOT_TOKEN")
+SAMBANOVA_API_KEY = os.getenv("SAMBANOVA_API_KEY")
 
-# Ключи берем из настроек (потом впишем их в Render)
-TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN")
-SAMBANOVA_KEY = os.environ.get("SAMBANOVA_API_KEY")
+# Список разрешенных ID (Ты и Жена)
+ADMIN_IDS = [7007517591, 6862724693] 
 
-bot = telebot.TeleBot(TG_BOT_TOKEN)
-client = OpenAI(base_url="https://api.sambanova.ai/v1", api_key=SAMBANOVA_KEY)
+# 3. КЛИЕНТЫ
+client = OpenAI(
+    api_key=SAMBANOVA_API_KEY,
+    base_url="https://api.sambanova.ai/v1",
+)
 
-# Доступ только для тебя и жены
-ADMIN_IDS = [7007517591, 6862724693]
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
 
-@bot.message_handler(func=lambda m: True)
-def handle_message(message):
-    uid = message.from_user.id
-    if uid not in ADMIN_IDS:
-        bot.reply_to(message, "Доступ закрыт.")
-        return
-
-    msg = bot.reply_to(message, "⏳ Анализирую...")
+# ЗАПРОС К LLAMA-4
+async def get_ai_answer(user_message):
     try:
         response = client.chat.completions.create(
-            model="Llama-4-Maverick-17B-128E-Instruct",
-            messages=[{"role": "user", "content": message.text}]
+            model='Llama-3.1-Tulu-3-405B',
+            messages=[
+                {"role": "system", "content": "Ты опытный врач-дерматолог и трихолог. Отвечай кратко, профессионально, на русском языке."},
+                {"role": "user", "content": user_message}
+            ],
+            temperature=0.1
         )
-        bot.edit_message_text(response.choices[0].message.content, message.chat.id, msg.message_id)
+        return response.choices[0].message.content
     except Exception as e:
-        bot.edit_message_text(f"Ошибка: {e}", message.chat.id, msg.message_id)
+        logger.error(f"SambaNova Error: {e}")
+        return "⚠️ Ошибка ИИ. Проверьте SAMBANOVA_API_KEY."
 
-def run_bot():
-    requests.get(f"https://api.telegram.org/bot{TG_BOT_TOKEN}/deleteWebhook")
-    bot.infinity_polling()
+# КОМАНДА /START
+@dp.message(Command("start"))
+async def start_command(message: types.Message):
+    if message.from_user.id in ADMIN_IDS:
+        await message.answer("✅ Доступ разрешен. Я готов помогать в вопросах дерматологии.")
+    else:
+        logger.warning(f"Попытка доступа от чужого ID: {message.from_user.id}")
+
+# ОБРАБОТКА СООБЩЕНИЙ
+@dp.message()
+async def handle_message(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    if not message.text:
+        return
+
+    status_msg = await message.answer("⏳ Думаю...")
+    answer = await get_ai_answer(message.text)
+    await status_msg.edit_text(answer)
+
+# ЗАПУСК
+async def main():
+    # drop_pending_updates=True убивает ошибку 409 Conflict
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    threading.Thread(target=run_bot, daemon=True).start()
-    uvicorn.run(app, host="0.0.0.0", port=10000)
+    asyncio.run(main())
