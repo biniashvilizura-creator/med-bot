@@ -1,5 +1,2 @@
-pyTelegramBotAPI
+aiogram
 openai
-fastapi
-uvicorn
-requests
