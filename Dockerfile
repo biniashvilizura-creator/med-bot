@@ -1,6 +1,6 @@
 FROM python:3.10-slim
 WORKDIR /app
-# Эта строчка установит всё необходимое
-RUN pip install --no-cache-dir aiogram openai
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 CMD ["python", "main.py"]
